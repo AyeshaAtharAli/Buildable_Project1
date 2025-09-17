@@ -19,52 +19,41 @@ categorical_cols = ['gender', 'race/ethnicity', 'parental level of education', '
 numerical_cols_for_prediction = ['reading score', 'writing score']
 
 # Define the categories explicitly based on the unique values observed in your original dataframe.
-# IMPORTANT: Ensure these categories match the unique values in your training data exactly.
+# This is needed for consistent one-hot encoding.
 gender_categories = ['female', 'male']
 race_ethnicity_categories = ['group A', 'group B', 'group C', 'group D', 'group E']
 parental_education_categories = ["associate's degree", "bachelor's degree", "high school", "master's degree", "some college", "some high school"]
 lunch_categories = ['free/reduced', 'standard']
 test_prep_categories = ['completed', 'none']
 
-# Create a ColumnTransformer for one-hot encoding.
-# This needs to match how the training data was transformed.
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('onehot', OneHotEncoder(handle_unknown='ignore', categories=[
-            gender_categories,
-            race_ethnicity_categories,
-            parental_education_categories,
-            lunch_categories,
-            test_prep_categories
-        ]), categorical_cols)
-    ],
-    remainder='passthrough' # Keep numerical columns as they are
-)
+# Create a OneHotEncoder for categorical features
+# handle_unknown='ignore' is important for deployment
+onehot_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False, categories=[
+    gender_categories,
+    race_ethnicity_categories,
+    parental_education_categories,
+    lunch_categories,
+    test_prep_categories
+])
 
-# To ensure consistent one-hot encoding, we need to fit the preprocessor
-# on a dummy dataset that includes all possible categories and numerical columns
-# in the correct order as the training data.
-# This is a crucial step to match the columns generated during training.
-# In a real scenario, you would save the fitted preprocessor from training.
-# Here, we create a dummy DataFrame with all possible columns from your training data
-dummy_data = {col: [None] for col in categorical_cols + numerical_cols_for_prediction}
-dummy_df = pd.DataFrame(dummy_data)
-# Fill with representative values if 'None' causes issues with fit
-for col in categorical_cols:
-    if col == 'gender':
-        dummy_df[col] = [gender_categories[0]]
-    elif col == 'race/ethnicity':
-        dummy_df[col] = [race_ethnicity_categories[0]]
-    elif col == 'parental level of education':
-        dummy_df[col] = [parental_education_categories[0]]
-    elif col == 'lunch':
-        dummy_df[col] = [lunch_categories[0]]
-    elif col == 'test preparation course':
-        dummy_df[col] = [test_prep_categories[0]]
-for col in numerical_cols_for_prediction:
-     dummy_df[col] = [0] # Use a numerical placeholder
-
-preprocessor.fit(dummy_df)
+# Define the exact column names and their order as expected by the trained model
+# This list comes from printing X_train.columns.tolist() after one-hot encoding during training
+expected_training_columns = [
+    'reading score',
+    'writing score',
+    'gender_male',
+    'race/ethnicity_group B',
+    'race/ethnicity_group C',
+    'race/ethnicity_group D',
+    'race/ethnicity_group E',
+    "parental level of education_bachelor's degree",
+    "parental level of education_high school",
+    "parental level of education_master's degree",
+    "parental level of education_some college",
+    "parental level of education_some high school",
+    'lunch_standard',
+    'test preparation course_none'
+]
 
 
 st.title('Student Math Score Predictor')
@@ -92,35 +81,48 @@ input_data = {
 }
 
 # Convert the input data to a pandas DataFrame
-# Ensure the columns are in the correct order before applying the preprocessor
 input_df = pd.DataFrame([input_data])
-input_df_ordered = input_df[categorical_cols + numerical_cols_for_prediction]
-
 
 # Add a button to trigger the prediction
 if st.sidebar.button('Predict Math Score'):
     try:
-        # Apply the fitted preprocessor to the input data
-        processed_input = preprocessor.transform(input_df_ordered)
+        # Separate categorical and numerical columns in the input DataFrame
+        input_categorical_df = input_df[categorical_cols]
+        input_numerical_df = input_df[numerical_cols_for_prediction]
+
+        # Apply one-hot encoding to the categorical features
+        input_categorical_encoded = onehot_encoder.fit_transform(input_categorical_df)
+
+        # Convert the encoded categorical features to a DataFrame
+        processed_categorical_df = pd.DataFrame(input_categorical_encoded)
+        processed_categorical_df.columns = onehot_encoder.get_feature_names_out(categorical_cols) # Get names for encoded columns
+
+
+        # Combine processed categorical and numerical features
+        input_numerical_df.reset_index(drop=True, inplace=True)
+        processed_categorical_df.reset_index(drop=True, inplace=True)
+        combined_input_df = pd.concat([input_numerical_df, processed_categorical_df], axis=1)
+
+
+        # Reindex the combined DataFrame to match the exact columns and order of X_train
+        # Fill any missing columns (due to categories not present in input) with 0
+        final_input_df = combined_input_df.reindex(columns=expected_training_columns, fill_value=0)
+
 
         # Make prediction
-        predicted_math_score = model.predict(processed_input)
+        # The model expects a numpy array or similar, so convert the DataFrame
+        predicted_math_score = model.predict(final_input_df)
+
 
         st.header('Predicted Math Score')
         st.success(f'{predicted_math_score[0]:.2f}')
 
     except Exception as e:
         st.error(f"An error occurred during prediction: {e}")
-        st.warning("Please ensure the input values are valid.")
+        st.warning("Please ensure the input values are valid and the expected training columns are correct.")
 
 st.write("""
 This app predicts the math score of a student based on their demographic information,
 lunch type, test preparation course completion, reading score, and writing score.
 Input the student's details in the sidebar and click 'Predict Math Score'.
 """)
-
-# Optional: Display the input data (for debugging)
-# st.subheader("Input Data")
-# st.dataframe(input_df_ordered)
-# st.subheader("Processed Input Data Shape")
-# st.write(processed_input.shape)
